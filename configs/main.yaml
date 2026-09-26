@@ -1,0 +1,11 @@
+seed: 42
+student_model: ./checkpoints/student
+teacher_model: ./checkpoints/teacher
+cuda_visible_devices: "0,1,2,3"
+sandbox_host: 127.0.0.1
+sandbox_port: 8081
+training_output: ./checkpoints/main
+exported_model: ./checkpoints/main/hf
+
+sandbox_python: ./.sandbox/bin/python
+tool_python: ./.tool-runtime/bin/python

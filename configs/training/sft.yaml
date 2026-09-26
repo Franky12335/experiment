@@ -1,0 +1,64 @@
+data:
+  train_files:
+  - data/prepared/teacher_sft_train.parquet
+  val_files:
+  - data/prepared/teacher_sft_val.parquet
+  train_batch_size: 128
+  micro_batch_size_per_gpu: 4
+  max_token_len_per_gpu: 32768
+  use_dynamic_bsz: true
+  max_length: 32768
+  truncation: error
+  messages_key: messages
+  tools_key: tools
+  enable_thinking_default: false
+  ignore_input_ids_mismatch: true
+  pad_mode: no_padding
+  num_workers: 4
+model:
+  path: ${oc.env:SFT_BASE_MODEL_PATH}
+  tokenizer_path: ${oc.env:SFT_BASE_MODEL_PATH}
+  use_remove_padding: true
+  enable_gradient_checkpointing: true
+  use_liger: true
+  use_fused_kernels: true
+engine:
+  strategy: fsdp2
+  seed: ${seed}
+  param_offload: false
+  optimizer_offload: false
+  offload_policy: false
+  reshard_after_forward: true
+  forward_prefetch: true
+  use_torch_compile: true
+  ulysses_sequence_parallel_size: ${oc.decode:${oc.env:SFT_SEQUENCE_PARALLEL_SIZE,1}}
+optim:
+  lr: 5.0e-05
+  lr_warmup_steps_ratio: 0.05
+  lr_scheduler_type: cosine
+  weight_decay: 0.0
+checkpoint:
+  save_contents:
+  - model
+  - optimizer
+  - extra
+  - hf_model
+  load_contents:
+  - model
+  - optimizer
+  - extra
+trainer:
+  project_name: agentic_sft
+  experiment_name: ${oc.env:SFT_RUN_NAME}
+  logger:
+  - console
+  total_epochs: 5
+  seed: ${seed}
+  save_freq: after_each_epoch
+  test_freq: after_each_epoch
+  resume_mode: auto
+  max_ckpt_to_keep: 2
+  nnodes: 1
+  n_gpus_per_node: ${oc.decode:${oc.env:NUM_GPUS}}
+  default_local_dir: ${oc.env:SFT_OUTPUT_DIR}
+seed: ${oc.decode:${oc.env:RUN_SEED,42}}

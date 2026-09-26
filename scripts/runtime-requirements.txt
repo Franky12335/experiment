@@ -1,0 +1,4 @@
+# Python libraries available to executed programs.
+numpy==2.2.6
+sympy==1.14.0
+scipy==1.15.3

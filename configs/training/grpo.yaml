@@ -1,0 +1,144 @@
+data:
+  train_files:
+  - data/prepared/teacher_grpo_train.parquet
+  val_files:
+  - data/prepared/teacher_grpo_val.parquet
+  prompt_key: prompt
+  train_batch_size: 64
+  max_prompt_length: 2560
+  max_response_length: 16384
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  truncation: error
+  dataloader_num_workers: 4
+  seed: ${seed}
+  apply_chat_template_kwargs:
+    enable_thinking: false
+actor_rollout_ref:
+  model:
+    path: ${oc.env:TEACHER_SFT_MODEL_PATH}
+    tokenizer_path: ${oc.env:TEACHER_SFT_MODEL_PATH}
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+    use_liger: true
+    use_fused_kernels: true
+  actor:
+    strategy: fsdp2
+    shuffle: false
+    ppo_mini_batch_size: 64
+    ppo_max_token_len_per_gpu: 32768
+    use_dynamic_bsz: true
+    ppo_epochs: 1
+    loss_agg_mode: token-mean
+    clip_ratio: 0.2
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    entropy_coeff: 0.0
+    optim:
+      lr: 1.0e-06
+      weight_decay: 0.0
+    fsdp_config:
+      param_offload: false
+      optimizer_offload: false
+      offload_policy: false
+      reshard_after_forward: true
+      forward_prefetch: true
+      use_torch_compile: true
+      seed: ${seed}
+    checkpoint:
+      save_contents:
+      - model
+      - optimizer
+      - extra
+      load_contents:
+      - model
+      - optimizer
+      - extra
+  rollout:
+    name: sglang
+    mode: async
+    seed: ${seed}
+    nnodes: 0
+    n_gpus_per_node: ${oc.decode:${oc.env:NUM_GPUS}}
+    'n': 8
+    calculate_log_probs: false
+    tensor_model_parallel_size: ${oc.decode:${oc.env:ROLLOUT_TP_SIZE,1}}
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    gpu_memory_utilization: 0.45
+    max_model_len: 20480
+    enforce_eager: false
+    max_num_seqs: 32
+    checkpoint_engine:
+      backend: naive
+    engine_kwargs:
+      sglang:
+        random_seed: ${seed}
+        rl_on_policy_target: fsdp
+        attention_backend: triton
+        disable_radix_cache: false
+        log_level: error
+        context_length: 20480
+        chunked_prefill_size: 8192
+        cuda_graph_max_bs: 32
+        schedule_policy: lpm
+    multi_turn:
+      enable: true
+      max_user_turns: 8
+      max_assistant_turns: 8
+      max_parallel_calls: 1
+      format: hermes
+      tokenization_sanity_check_mode: strict
+      tool_config_path: configs/tools.yaml
+    agent:
+      default_agent_loop: tool_agent
+      num_workers: 8
+      agent_loop_config_path: configs/agent_loop.yaml
+  ref:
+    fsdp_config:
+      seed: ${seed}
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+  rollout_correction:
+    bypass_mode: false
+reward:
+  custom_reward_function:
+    path: src/trajpd/score.py
+    name: compute_score
+  reward_manager:
+    source: register
+    name: naive
+  num_workers: 16
+trainer:
+  use_v1: true
+  v1:
+    trainer_mode: sync
+  project_name: agentic_teacher
+  experiment_name: main
+  logger:
+  - console
+  nnodes: 1
+  n_gpus_per_node: ${oc.decode:${oc.env:NUM_GPUS}}
+  total_training_steps: 150
+  total_epochs: 1
+  save_freq: 40
+  test_freq: 40
+  val_before_train: true
+  resume_mode: auto
+  max_actor_ckpt_to_keep: 6
+  default_local_dir: checkpoints/teacher_grpo
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      env_vars:
+        OQ_SANDBOX_URL: ${oc.env:OQ_SANDBOX_URL}
+        NO_PROXY: ${oc.env:NO_PROXY}
+        no_proxy: ${oc.env:no_proxy}
+        PYTHONHASHSEED: ${oc.env:RUN_SEED,42}
+        CUBLAS_WORKSPACE_CONFIG: :4096:8
+        RUN_SEED: ${oc.env:RUN_SEED,42}
+seed: ${oc.decode:${oc.env:RUN_SEED,42}}

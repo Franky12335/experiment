@@ -1,0 +1,24 @@
+tools:
+- class_name: src.trajpd.sandbox.SandboxFusionTool
+  config:
+    sandbox_fusion_url: ${oc.env:OQ_SANDBOX_URL}
+    timeout: 5
+    max_attempts: 1
+    retry_backoff_seconds: 1.0
+    max_inflight_requests: 8
+    language: python
+    memory_limit_mb: 2048
+    type: native
+  tool_schema:
+    type: function
+    function:
+      name: code_interpreter
+      description: Execute Python to calculate or check an intermediate result.
+      parameters:
+        type: object
+        properties:
+          code:
+            type: string
+            description: Complete Python code to execute.
+        required:
+        - code

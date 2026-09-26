@@ -1,0 +1,12 @@
+.venv/
+.sandbox/
+.tool-runtime/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+checkpoints/
+evaluation/
+wandb/
+logs/
+*.log

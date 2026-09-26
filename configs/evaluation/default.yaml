@@ -1,0 +1,144 @@
+evaluation:
+  resume: false
+  method: trajpd
+  protocol_name: agent-evaluation-v3
+  benchmarks:
+  - aime2024
+  - aime2025
+  - gpqa_diamond
+  - livecodebench_v6
+  samples_per_problem: 8
+  primary_metric: acc/mean@8
+  secondary_metrics:
+  - pass@8
+  pass_k:
+  - 8
+  within_problem_bootstrap_samples: 1000
+  bootstrap_samples: 10000
+  seed: ${seed}
+  fail_on_infrastructure_error: true
+data:
+  interaction_budget:
+    max_tool_calls: 15
+    max_new_tokens_per_turn: 8192
+    final_answer_max_new_tokens: 4096
+    max_generated_tokens: 16384
+    max_tool_observation_tokens: 1024
+    max_protocol_tokens: 4096
+  train_files:
+  - data/prepared/eval/aime2024.parquet
+  - data/prepared/eval/aime2025.parquet
+  - data/prepared/eval/gpqa_diamond.parquet
+  - data/prepared/eval/livecodebench_v6.parquet
+  val_files: ${data.train_files}
+  prompt_key: prompt
+  train_batch_size: 1
+  val_batch_size: 4
+  max_prompt_length: 4096
+  max_response_length: 36864
+  return_raw_chat: true
+  filter_overlong_prompts: false
+  truncation: error
+  validation_shuffle: false
+  dataloader_num_workers: 4
+  seed: ${seed}
+  apply_chat_template_kwargs:
+    enable_thinking: false
+actor_rollout_ref:
+  model:
+    path: ${oc.env:EVAL_MODEL_PATH}
+    tokenizer_path: ${oc.env:EVAL_MODEL_PATH}
+    use_remove_padding: true
+    enable_gradient_checkpointing: false
+  actor:
+    strategy: fsdp2
+    ppo_mini_batch_size: 1
+    ppo_max_token_len_per_gpu: 49152
+    use_dynamic_bsz: true
+    fsdp_config:
+      seed: ${seed}
+  rollout:
+    name: sglang
+    mode: async
+    seed: ${seed}
+    'n': 1
+    tensor_model_parallel_size: ${oc.decode:${oc.env:EVAL_TP_SIZE,1}}
+    free_cache_engine: false
+    gpu_memory_utilization: 0.6
+    max_model_len: 40960
+    engine_kwargs:
+      sglang:
+        context_length: 40960
+        chunked_prefill_size: 8192
+        disable_piecewise_cuda_graph: true
+        log_level: error
+    val_kwargs:
+      top_p: 0.6
+      top_k: -1
+      temperature: 1.0
+      do_sample: true
+      'n': ${evaluation.samples_per_problem}
+    multi_turn:
+      enable: true
+      max_user_turns: null
+      max_assistant_turns: 16
+      max_parallel_calls: 1
+      format: hermes
+      tokenization_sanity_check_mode: strict
+      tool_config_path: configs/tools.yaml
+    agent:
+      default_agent_loop: tool_agent
+      num_workers: 16
+      agent_loop_config_path: configs/evaluation_agent_loop.yaml
+  ref:
+    fsdp_config:
+      seed: ${seed}
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+reward:
+  custom_reward_function:
+    path: src/evaluation/score.py
+    name: compute_score
+  reward_manager:
+    source: importlib
+    name: ProtocolAwareDAPORewardManager
+    module:
+      path: src/evaluation/reward_manager.py
+  reward_kwargs:
+    max_resp_len: ${data.max_response_length}
+    overlong_buffer_cfg:
+      enable: false
+      len: 1024
+      penalty_factor: 1.0
+      log: true
+  num_workers: 16
+trainer:
+  use_v1: true
+  v1:
+    trainer_mode: sync
+  project_name: agentic_evaluation
+  experiment_name: main
+  logger:
+  - console
+  nnodes: 1
+  n_gpus_per_node: ${oc.decode:${oc.env:NUM_GPUS}}
+  val_before_train: true
+  val_only: true
+  total_epochs: 0
+  test_freq: 0
+  save_freq: 0
+  log_val_generations: 0
+  validation_data_dir: evaluation/${oc.env:EVAL_BENCHMARK,summaries}/${oc.env:EVAL_METHOD}/new_run
+  default_local_dir: logs/evaluation/${oc.env:EVAL_BENCHMARK,summaries}/${oc.env:EVAL_METHOD}/new_run
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      env_vars:
+        OQ_SANDBOX_URL: ${oc.env:OQ_SANDBOX_URL}
+        NO_PROXY: ${oc.env:NO_PROXY}
+        no_proxy: ${oc.env:no_proxy}
+        PYTHONHASHSEED: ${oc.env:RUN_SEED,42}
+        CUBLAS_WORKSPACE_CONFIG: :4096:8
+        RUN_SEED: ${oc.env:RUN_SEED,42}
+seed: ${oc.decode:${oc.env:RUN_SEED,42}}

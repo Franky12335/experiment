@@ -1,0 +1,220 @@
+observability:
+  artifact_dir: ${oc.env:ARTIFACT_DIR,artifacts/trajpd}
+  rollout_save_token_ids: true
+algorithm:
+  adv_estimator: reinforce
+  trajpd:
+    trajectories_per_prompt: 1
+    solver_rtol: 1.0e-05
+    solver_atol: 1.0e-08
+    solver_max_iterations: 64
+    solver_max_bracket_iterations: 64
+    distillation_alpha: 1.0
+data:
+  interaction_budget:
+    max_tool_calls: 5
+    max_new_tokens_per_turn: 8192
+    final_answer_max_new_tokens: 4096
+    max_generated_tokens: 16384
+    max_tool_observation_tokens: 1024
+    max_protocol_tokens: 3072
+    max_assistant_turns: 10
+  train_files:
+  - data/prepared/decision_distillation_train.parquet
+  val_files:
+  - data/prepared/teacher_grpo_val.parquet
+  prompt_key: prompt
+  gen_batch_size: 1
+  max_prompt_length: 2560
+  max_response_length: 24576
+  return_raw_chat: true
+  filter_overlong_prompts: false
+  truncation: error
+  shuffle: true
+  dataloader_num_workers: 0
+  seed: ${seed}
+  apply_chat_template_kwargs:
+    enable_thinking: false
+  train_batch_size: 128
+actor_rollout_ref:
+  model:
+    path: ${oc.env:STUDENT_MODEL_PATH,./checkpoints/student}
+    tokenizer_path: ${oc.env:STUDENT_MODEL_PATH,./checkpoints/student}
+    external_lib: src.trajpd.decision_engine
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+    use_liger: false
+    use_fused_kernels: false
+    lora_rank: 0
+  actor:
+    strategy: fsdp2
+    ulysses_sequence_parallel_size: 1
+    ppo_epochs: 1
+    shuffle: false
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    use_dynamic_bsz: true
+    ppo_mini_batch_size: ${data.train_batch_size}
+    ppo_micro_batch_size_per_gpu: null
+    ppo_max_token_len_per_gpu: 49152
+    data_loader_seed: ${seed}
+    checkpoint:
+      save_contents:
+      - model
+      - optimizer
+      - extra
+      load_contents: ${.save_contents}
+    optim:
+      optimizer: AdamW
+      lr_warmup_steps_ratio: 0.05
+      lr_scheduler_type: cosine
+      min_lr_ratio: 0.1
+      weight_decay: 0.0
+      clip_grad: 1.0
+      lr: 3.0e-06
+    fsdp_config:
+      model_dtype: fp32
+      dtype: bfloat16
+      param_offload: false
+      optimizer_offload: false
+      offload_policy: false
+      reshard_after_forward: true
+      forward_prefetch: false
+      use_torch_compile: true
+      seed: ${seed}
+  ref:
+    log_prob_use_dynamic_bsz: true
+    log_prob_max_token_len_per_gpu: 49152
+    fsdp_config:
+      seed: ${seed}
+  rollout:
+    mode: async
+    name: sglang
+    'n': ${algorithm.trajpd.trajectories_per_prompt}
+    seed: ${seed}
+    tensor_model_parallel_size: 1
+    load_format: safetensors
+    layered_summon: true
+    temperature: 1.0
+    top_k: -1
+    gpu_memory_utilization: 0.45
+    max_model_len: 32768
+    max_num_seqs: 128
+    calculate_log_probs: false
+    free_cache_engine: true
+    checkpoint_engine:
+      backend: naive
+    engine_kwargs:
+      sglang:
+        random_seed: ${seed}
+        rl_on_policy_target: fsdp
+        attention_backend: triton
+        disable_radix_cache: false
+        log_level: error
+        context_length: 32768
+        chunked_prefill_size: 4096
+        cuda_graph_max_bs: 64
+        schedule_policy: lpm
+    multi_turn:
+      enable: true
+      max_user_turns: null
+      max_assistant_turns: ${data.interaction_budget.max_assistant_turns}
+      max_parallel_calls: 1
+      max_tool_response_length: 1024
+      tool_response_truncate_side: middle
+      format: hermes
+      tokenization_sanity_check_mode: strict
+      tool_config_path: configs/tools.yaml
+    agent:
+      default_agent_loop: tool_agent
+      num_workers: 16
+      max_concurrent_trajectories: 128
+      agent_loop_config_path: configs/agent_loop.yaml
+      agent_loop_manager_class: src.trajpd.agent_loop.TrajPDAgentLoopManager
+    top_p: 0.95
+async_training:
+  partial_rollout: false
+reward:
+  custom_reward_function:
+    path: src/trajpd/score.py
+    name: compute_score
+  reward_manager:
+    source: register
+    name: naive
+  num_workers: 16
+distillation:
+  enabled: true
+  phase_shared_pool: true
+  nnodes: 1
+  n_gpus_per_node: 4
+  teacher_key: data_source
+  distillation_loss:
+    loss_mode: forward_kl_topk
+    topk: 16
+  teacher_models:
+    teacher_model:
+      key: teacher
+      model_path: ${oc.env:TEACHER_MODEL_PATH,./checkpoints/teacher}
+      num_replicas: 1
+      inference:
+        name: sglang
+        dtype: bfloat16
+        gpu_memory_utilization: 0.55
+        enforce_eager: false
+        tensor_model_parallel_size: 4
+        data_parallel_size: 1
+        pipeline_model_parallel_size: 1
+        max_model_len: 32768
+        max_num_seqs: 32
+        load_format: safetensors
+        enable_chunked_prefill: true
+        enable_prefix_caching: true
+        free_cache_engine: true
+        engine_kwargs:
+          sglang:
+            attention_backend: triton
+            context_length: 32768
+            chunked_prefill_size: 8192
+            log_level: error
+        seed: ${seed}
+trainer:
+  use_v1: true
+  balance_batch: true
+  v1:
+    trainer_mode: sync
+    sync:
+      parameter_sync_step: 1
+    sampler:
+      max_off_policy_threshold: 1
+      max_off_policy_strategy: drop
+      sync_refill_failed_groups: false
+  project_name: TrajPD
+  experiment_name: main
+  logger:
+  - console
+  nnodes: 1
+  total_epochs: 1
+  rollout_data_dir: ${observability.artifact_dir}/rollouts
+  default_local_dir: ${oc.env:DISTILLATION_RUN_DIR,checkpoints/trajpd}
+  resume_mode: disable
+  total_training_steps: 100
+  save_freq: 20
+  max_actor_ckpt_to_keep: null
+  test_freq: 0
+  val_before_train: false
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      env_vars:
+        OQ_SANDBOX_URL: ${oc.env:OQ_SANDBOX_URL}
+        NO_PROXY: ${oc.env:NO_PROXY}
+        no_proxy: ${oc.env:no_proxy}
+        SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK: ${oc.env:SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK,0}
+        PYTHONHASHSEED: ${oc.env:RUN_SEED,42}
+        CUBLAS_WORKSPACE_CONFIG: :4096:8
+        RUN_SEED: ${oc.env:RUN_SEED,42}
+transfer_queue:
+  enable: true
+critic:
+  enable: false
+seed: ${oc.decode:${oc.env:RUN_SEED,42}}
