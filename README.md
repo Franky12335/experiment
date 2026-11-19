@@ -4,7 +4,7 @@ This package contains the training method, data preparation, and held-out evalua
 
 ## Setup
 
-Use Linux, Python 3.12, CUDA 13, and four 80 GiB A100 GPUs. From the package root, install the three environments:
+From the package root, install the three environments:
 
 ```bash
 python3.12 -m venv .venv
